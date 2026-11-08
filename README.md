@@ -216,7 +216,7 @@ server {
 ```yaml
 services:
   myztplanet:
-    image: xubiaolin/zerotier-planet:latest
+    image: fullyautomaticio/zerotier-planet:latest
     container_name: myztplanet
     restart: unless-stopped
     ports:

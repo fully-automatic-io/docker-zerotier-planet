@@ -3,7 +3,7 @@ set -e
 
 USER=zerotier
 REPO=ZeroTierOne
-DOCKER_IMAGE="xubiaolin/zerotier-planet"
+DOCKER_IMAGE="fullyautomaticio/zerotier-planet"
 
 # 只取正式 release（x.y.z）
 latest_tag=$(curl -s "https://api.github.com/repos/$USER/$REPO/releases" | jq -r '.[] | select(.prerelease == false and .draft == false) | .tag_name' | grep -E "^[0-9]+\.[0-9]+\.[0-9]+$" | sort -V | tail -n 1)

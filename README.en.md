@@ -216,7 +216,7 @@ This repository **does not include** a `compose.yaml`. If you prefer not to use 
 ```yaml
 services:
   myztplanet:
-    image: xubiaolin/zerotier-planet:latest
+    image: fullyautomaticio/zerotier-planet:latest
     container_name: myztplanet
     restart: unless-stopped
     ports:

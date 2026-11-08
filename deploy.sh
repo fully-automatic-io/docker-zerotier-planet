@@ -5,8 +5,8 @@ ZEROTIER_PATH="$(pwd)/data/zerotier"
 CONFIG_PATH="${ZEROTIER_PATH}/config"
 DIST_PATH="${ZEROTIER_PATH}/dist"
 ZTNCUI_PATH="${ZEROTIER_PATH}/ztncui"
-DOCKER_IMAGE_THRID="xubiaolin/zerotier-planet:latest"
-DOCKER_IMAGE_SRC="xubiaolin/zerotier-planet:latest"
+DOCKER_IMAGE_THRID="fullyautomaticio/zerotier-planet:latest"
+DOCKER_IMAGE_SRC="fullyautomaticio/zerotier-planet:latest"
 DOCKER_IMAGE=$DOCKER_IMAGE_THRID
 print_message() {
     local message=$1
