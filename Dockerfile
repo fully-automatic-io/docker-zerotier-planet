@@ -1,58 +1,59 @@
-FROM alpine:3.14 as builder
+ARG ALPINE_VERSION=3.24
+
+FROM alpine:${ALPINE_VERSION} AS builder
 
 ENV TZ=Asia/Shanghai
-ARG TAG=actions
-ENV TAG=${TAG}
+# ZeroTierOne release tag to build (only stable releases, e.g. 1.16.2)
+ARG TAG=1.16.2
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+ARG ZTNCUI_REPO=https://github.com/key-networks/ztncui.git
 
 WORKDIR /app
-ADD ./patch/entrypoint.sh /app/entrypoint.sh
-ADD ./patch/http_server.js /app/http_server.js
-ADD ./patch/mkworld_custom.cpp /app/patch/mkworld_custom.cpp
+COPY ./patch/entrypoint.sh /app/entrypoint.sh
+COPY ./patch/http_server.js /app/http_server.js
+COPY ./patch/mkworld_custom.cpp /app/patch/mkworld_custom.cpp
+COPY ./patch/build_mkworld.sh /app/patch/build_mkworld.sh
 
 # init tool
-RUN set -x\
-    && apk update\
-    && apk add --no-cache git python3 npm make g++ linux-headers curl pkgconfig openssl-dev jq build-base gcc cmake go \
+RUN set -x \
+    && apk add --no-cache git nodejs npm make g++ linux-headers curl pkgconfig openssl-dev jq build-base cargo rust \
     && echo "env prepare success!"
 
 # make zerotier-one
-RUN set -x\
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y\
-    && source "$HOME/.cargo/env"\
-    && git clone https://github.com/zerotier/ZeroTierOne.git\
-    && cd ZeroTierOne\
-    && git checkout ${TAG}\
-    && echo "切换到tag:${TAG}"\
-    && make ZT_SYMLINK=1 \
-    && make -j\
-    && make install\
-    && echo "make success!"\
-    && zerotier-one -d || true\
-    && sleep 5s\
-    && (ps -ef |grep zerotier-one |grep -v grep |awk '{print $1}' |xargs kill -9 || true)\
-    && echo "zerotier-one init success!"\
-    && cd /app/ZeroTierOne/attic/world \
-    && cp /app/patch/mkworld_custom.cpp .\
-    && mv mkworld.cpp mkworld.cpp.bak \
-    && mv mkworld_custom.cpp mkworld.cpp \
-    && sh build.sh \
-    && mkdir -p /var/lib/zerotier-one \
-    && mv mkworld /var/lib/zerotier-one\
+# Since 1.16 the network controller (needed by ztncui) lives in nonfree/ and is
+# only built with ZT_NONFREE=1 (source-available, non-commercial license).
+RUN set -x \
+    && git clone --depth 1 --branch "${TAG}" https://github.com/zerotier/ZeroTierOne.git \
+    && cd ZeroTierOne \
+    && echo "building tag: ${TAG}" \
+    && make -j"$(nproc)" ZT_NONFREE=1 one \
+    && make install \
+    && echo "make success!" \
+    && sh /app/patch/build_mkworld.sh /app/ZeroTierOne /app/patch/mkworld_custom.cpp /usr/local/bin/mkworld \
+    && mkdir -p /app/LICENSES \
+    && cp LICENSE.txt LICENSE-MPL.txt /app/LICENSES/ \
+    && cp nonfree/LICENSE.md /app/LICENSES/LICENSE-NONFREE.md \
     && echo "mkworld build success!"
 
-
-
-#make ztncui 
+# make ztncui
+# argon2@0.19 does not build on current Node, bump to a maintained version
+# (same hash/verify API, existing password hashes stay valid).
 RUN set -x \
-    && mkdir /app -p \
-    &&  cd /app \
-    && git clone --progress https://github.com/key-networks/ztncui.git\
-    && cd /app/ztncui/src \
-    && npm config set registry https://registry.npmmirror.com\
-    && npm install -g node-gyp\
-    && npm install 
+    && cd /app \
+    && git clone --depth 1 --progress "${ZTNCUI_REPO}" ztncui \
+    && cd /app/ztncui \
+    && ZTNCUI_COMMIT="$(git rev-parse --short HEAD)" \
+    && rm -rf .git \
+    && cd src \
+    && npm config set registry "${NPM_REGISTRY}" \
+    && npm pkg set dependencies.argon2=^0.44.0 \
+    && npm install --omit=dev --no-audit --no-fund \
+    && echo "ztncui=${ZTNCUI_COMMIT} zerotier=${TAG} node=$(node -v)" > /app/ztncui/.version \
+    && cat /app/ztncui/.version
 
-FROM alpine:3.14
+FROM alpine:${ALPINE_VERSION}
+
+ARG TAG=1.16.2
 
 WORKDIR /app
 
@@ -63,22 +64,24 @@ ENV ZT_PORT=9994
 ENV API_PORT=3443
 ENV FILE_SERVER_PORT=3000
 
-ENV GH_MIRROR="https://mirror.ghproxy.com/"
 ENV FILE_KEY=''
 ENV TZ=Asia/Shanghai
+ENV ZT_VERSION=${TAG}
+
+RUN set -x \
+    && apk add --no-cache nodejs npm libstdc++ libgcc libssl3 libcrypto3 curl jq openssl tzdata \
+    && mkdir -p /app/config /var/lib/zerotier-one
 
 COPY --from=builder /app/ztncui /bak/ztncui
-COPY --from=builder /var/lib/zerotier-one /bak/zerotier-one
-
-COPY --from=builder /app/ZeroTierOne/zerotier-one /usr/sbin/zerotier-one
+COPY --from=builder /usr/sbin/zerotier-one /usr/sbin/zerotier-one
+COPY --from=builder /usr/local/bin/mkworld /usr/local/bin/mkworld
+COPY --from=builder /app/LICENSES /app/LICENSES
 COPY --from=builder /app/entrypoint.sh /app/entrypoint.sh
 COPY --from=builder /app/http_server.js /app/http_server.js
 
-RUN set -x \
-    && apk update \
-    && apk add --no-cache npm curl jq openssl\
-    && mkdir /app/config -p 
-
+RUN ln -sf zerotier-one /usr/sbin/zerotier-cli \
+    && ln -sf zerotier-one /usr/sbin/zerotier-idtool \
+    && zerotier-one -v
 
 VOLUME [ "/app/dist","/app/ztncui","/var/lib/zerotier-one","/app/config"]
 

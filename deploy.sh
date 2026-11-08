@@ -112,8 +112,8 @@ read_port() {
 
 # 获取IP地址
 configure_ip() {
-    ipv4=$(curl -s https://ipv4.icanhazip.com/)
-    ipv6=$(curl -s https://ipv6.icanhazip.com/)
+    ipv4=$(curl -s --max-time 10 https://ipv4.icanhazip.com/)
+    ipv6=$(curl -s --max-time 10 https://ipv6.icanhazip.com/)
     echo "获取到的IPv4地址为: $ipv4"
     echo "获取到的IPv6地址为: $ipv6"
 }
@@ -187,8 +187,8 @@ install() {
 
     sleep 10
 
-    KEY=$(docker exec -it ${CONTAINER_NAME} sh -c 'cat /app/config/file_server.key' | tr -d '\r')
-    MOON_NAME=$(docker exec -it ${CONTAINER_NAME} sh -c 'ls /app/dist | grep moon' | tr -d '\r')
+    KEY=$(docker exec ${CONTAINER_NAME} sh -c 'cat /app/config/file_server.key' | tr -d '\r')
+    MOON_NAME=$(docker exec ${CONTAINER_NAME} sh -c 'ls /app/dist | grep moon' | tr -d '\r')
 
     echo "安装完成"
     echo "---------------------------"
@@ -278,8 +278,33 @@ upgrade() {
     echo "开始升级，将会删除旧的容器，10秒后开始升级..."
     sleep 10
 
+    backup_data
+
     docker rm -f ${CONTAINER_NAME} || true
     install_from_config
+
+    echo "---------------------------"
+    print_message "升级完成：planet、moon、节点身份和网络配置均已保留，客户端无需重新替换planet文件" "32"
+    print_message "ztncui会在首次启动时自动迁移(保留账号密码和成员名称)，如无法登录可在菜单中选择 5 重置密码" "32"
+    echo "查看启动日志：docker logs -f ${CONTAINER_NAME}"
+    echo "---------------------------"
+}
+
+# 升级前备份数据目录
+backup_data() {
+    if [ ! -d "${ZEROTIER_PATH}" ]; then
+        return
+    fi
+    local backup_file="$(dirname ${ZEROTIER_PATH})/zerotier-backup-$(date +%Y%m%d-%H%M%S).tgz"
+    echo "正在备份数据到 ${backup_file} ..."
+    docker stop ${CONTAINER_NAME} >/dev/null 2>&1 || true
+    if tar czf "${backup_file}" -C "$(dirname ${ZEROTIER_PATH})" "$(basename ${ZEROTIER_PATH})"; then
+        print_message "备份完成：${backup_file}" "32"
+    else
+        print_message "备份失败，已取消升级" "31"
+        docker start ${CONTAINER_NAME} >/dev/null 2>&1 || true
+        exit 1
+    fi
 }
 
 info() {
@@ -330,7 +355,7 @@ uninstall() {
 }
 
 resetpwd() {
-    docker exec -it ${CONTAINER_NAME} sh -c 'cp /app/ztncui/src/etc/default.passwd /app/ztncui/src/etc/passwd'
+    docker exec ${CONTAINER_NAME} sh -c 'cp /app/ztncui/src/etc/default.passwd /app/ztncui/src/etc/passwd'
     if [ $? -ne 0 ]; then
         echo "重置密码失败"
         exit 1

@@ -43,7 +43,7 @@
 
 #include <node/Constants.hpp>
 #include <node/World.hpp>
-#include <node/C25519.hpp>
+#include <node/ECC.hpp>
 #include <node/Identity.hpp>
 #include <node/InetAddress.hpp>
 #include <osdep/OSUtils.hpp>
@@ -62,26 +62,26 @@ void printHelp() {
 int jsonToBinary() {
 	std::string previous, current;
 	if ((!OSUtils::readFile("previous.c25519", previous)) || (!OSUtils::readFile("current.c25519", current))) {
-		C25519::Pair np(C25519::generate());
+		ECC::Pair np(ECC::generate());
 		previous = std::string();
-		previous.append((const char*)np.pub.data, ZT_C25519_PUBLIC_KEY_LEN);
-		previous.append((const char*)np.priv.data, ZT_C25519_PRIVATE_KEY_LEN);
+		previous.append((const char*)np.pub.data, ZT_ECC_PUBLIC_KEY_SET_LEN);
+		previous.append((const char*)np.priv.data, ZT_ECC_PRIVATE_KEY_SET_LEN);
 		current = previous;
 		OSUtils::writeFile("previous.c25519", previous);
 		OSUtils::writeFile("current.c25519", current);
 		fprintf(stderr, "INFO: created initial world keys: previous.c25519 and current.c25519 (both initially the same)" ZT_EOL_S);
 	}
 
-	if ((previous.length() != (ZT_C25519_PUBLIC_KEY_LEN + ZT_C25519_PRIVATE_KEY_LEN)) || (current.length() != (ZT_C25519_PUBLIC_KEY_LEN + ZT_C25519_PRIVATE_KEY_LEN))) {
+	if ((previous.length() != (ZT_ECC_PUBLIC_KEY_SET_LEN + ZT_ECC_PRIVATE_KEY_SET_LEN)) || (current.length() != (ZT_ECC_PUBLIC_KEY_SET_LEN + ZT_ECC_PRIVATE_KEY_SET_LEN))) {
 		fprintf(stderr, "FATAL: previous.c25519 or current.c25519 empty or invalid" ZT_EOL_S);
 		return 1;
 	}
-	C25519::Pair previousKP;
-	memcpy(previousKP.pub.data, previous.data(), ZT_C25519_PUBLIC_KEY_LEN);
-	memcpy(previousKP.priv.data, previous.data() + ZT_C25519_PUBLIC_KEY_LEN, ZT_C25519_PRIVATE_KEY_LEN);
-	C25519::Pair currentKP;
-	memcpy(currentKP.pub.data, current.data(), ZT_C25519_PUBLIC_KEY_LEN);
-	memcpy(currentKP.priv.data, current.data() + ZT_C25519_PUBLIC_KEY_LEN, ZT_C25519_PRIVATE_KEY_LEN);
+	ECC::Pair previousKP;
+	memcpy(previousKP.pub.data, previous.data(), ZT_ECC_PUBLIC_KEY_SET_LEN);
+	memcpy(previousKP.priv.data, previous.data() + ZT_ECC_PUBLIC_KEY_SET_LEN, ZT_ECC_PRIVATE_KEY_SET_LEN);
+	ECC::Pair currentKP;
+	memcpy(currentKP.pub.data, current.data(), ZT_ECC_PUBLIC_KEY_SET_LEN);
+	memcpy(currentKP.priv.data, current.data() + ZT_ECC_PUBLIC_KEY_SET_LEN, ZT_ECC_PRIVATE_KEY_SET_LEN);
 
 	// =========================================================================
 	// EDIT BELOW HERE
@@ -89,7 +89,9 @@ int jsonToBinary() {
 	std::vector<World::Root> roots;
 
 	const uint64_t id = ZT_WORLD_ID_EARTH;
-	const uint64_t ts = 1567191349589ULL; // August 30th, 2019
+	// Use the current time so that a regenerated planet (e.g. after an IP change)
+	// is newer than the previous one and can be pushed to clients by the roots.
+	const uint64_t ts = (uint64_t)OSUtils::now();
 
 	std::string fileContent;
 	if (!OSUtils::readFile("moon.json", fileContent)) {
@@ -138,12 +140,12 @@ int jsonToBinary() {
 	return 0;
 }
 
-void binaryToJson() {
+int binaryToJson() {
 	// Read world.bin file into memory
 	std::string binContent;
 	if (!OSUtils::readFile("world.bin", binContent)) {
 		fprintf(stderr, "Failed to open world.bin file." ZT_EOL_S);
-		return;
+		return 1;
 	}
 
 	// Deserialize the binary data into a World object
@@ -151,7 +153,7 @@ void binaryToJson() {
 	World world;
 	if (!world.deserialize(binBuffer, 0)) {
 		fprintf(stderr, "Failed to deserialize world.bin content." ZT_EOL_S);
-		return;
+		return 1;
 	}
 
 	// Create a JSON object to store the world data
@@ -165,7 +167,7 @@ void binaryToJson() {
 
 		// Add identity to the root JSON object
 		char identityStr[ZT_IDENTITY_STRING_BUFFER_LENGTH];
-		root.identity.toString(true, identityStr); // Include private key
+		root.identity.toString(false, identityStr); // Public identity only
 		rootJson["identity"] = identityStr;
 
 		// Add stableEndpoints array to the root JSON object
@@ -184,10 +186,12 @@ void binaryToJson() {
 	printf("World JSON:\n%s\n", jsonStr.c_str());
 	if (!OSUtils::writeFile("config.json", jsonStr.c_str(), jsonStr.size())) {
 		fprintf(stderr, "Failed to write JSON data to config.json." ZT_EOL_S);
+		return 1;
 	}
 	else {
 		printf("JSON data successfully written to config.json." ZT_EOL_S);
 	}
+	return 0;
 }
 
 
@@ -221,12 +225,8 @@ int main(int argc, char** argv)
 		return 1;
 	}
 
-	if (json2bin) {
-		jsonToBinary();
+	if (bin2json) {
+		return binaryToJson();
 	}
-	else if (bin2json) {
-		binaryToJson();
-	}
-
-	return 0;
+	return jsonToBinary();
 }
