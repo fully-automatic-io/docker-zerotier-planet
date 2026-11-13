@@ -282,7 +282,7 @@ ZeroTier 需要访问 TUN 设备。请按当前 Proxmox / LXC 版本核对容器
 
 ### 开发计划
 
-- [ ] 多 Planet 支持
+- [x] 多 Planet 支持
 - [x] 自定义管理界面端口
 - [ ] Planet 与 Controller 分离部署
 
@@ -301,3 +301,73 @@ ZeroTier 需要访问 TUN 设备。请按当前 Proxmox / LXC 版本核对容器
 - [WireGuard 一键脚本](https://github.com/xubiaolin/wireguard-onekey)
 - [ZeroTier 虚拟局域网详解](https://www.glimmer.ltd/2021/3299983056/)
 - [五分钟自建 ZeroTier 的 Planet / Controller](https://v2ex.com/t/799623)
+
+## 多 Planet 与现有单节点升级
+
+支持同一份 planet 中配置 **1～4 个独立 root**。原服务器 A 保持 `primary` 角色，运行 root、Controller 和管理界面；B/C/D 使用 `root` 角色，仅运行 ZeroTier。根节点冗余不提供 Controller 高可用。
+
+### 先准备新版镜像
+
+以下命令使用当前源码构建的本地镜像；本次源码改动不会自动更新 Docker Hub 镜像。在每台服务器的项目目录执行：
+
+```bash
+docker build -t zerotier-planet:multi .
+export ZT_IMAGE=zerotier-planet:multi
+```
+
+A 上先备份完整 `data/zerotier/`，然后执行 `ZT_SKIP_PULL=1 ./deploy.sh`，选择 **3. 更新**。升级保留原身份、签名密钥、网络与账号；不要选择重新安装。启动会把旧部署导出的自建 planet 安装到服务数据目录，不会重新签名。签名密钥仍位于 `one/current.c25519`、`one/previous.c25519`，不要复制到新 root。
+
+### 新增 B，再发布统一 planet
+
+1. **在 B 上**初始化独立身份并导出公开配置（IPv4、IPv6 至少填写一个，端口填写实际公网 UDP 端口；示例假设映射前后端口相同）：
+
+   ```bash
+   ./deploy.sh root-init 203.0.113.20 '' 9994
+   ./deploy.sh root-export > b.json
+   ```
+
+   此时尚未启动服务。重复初始化会复用身份，但不允许悄悄修改已保存的端点。将公开文件 `b.json` 手动复制到 A，不能复制节点私钥。
+
+2. **在 A 上**导出自身配置，合并公开根列表并生成候选文件（合并示例需要 Python 3）：
+
+   ```bash
+   ./deploy.sh root-export > a.json
+   python3 -c 'import json; print(json.dumps({"roots": json.load(open("a.json"))["roots"] + json.load(open("b.json"))["roots"]}))' > roots.json
+   ./deploy.sh planet-build roots.json
+   ```
+
+   候选文件为 `data/zerotier/dist/planet.next`，生成不会修改运行配置。继续扩容时，应以 `planet-info` 输出中的**全部现有 roots**为基础添加节点，不要只导出 A、B 后漏掉其他 root。首次扩容强制保留原 root 及其端点。
+
+3. 将该候选文件手动复制到 B；**先在 B 应用，再在 A 应用同一份文件**：
+
+   ```bash
+   # B：先放行配置的 UDP 端口，再运行
+   ./deploy.sh planet-apply /path/to/planet.next
+   # A
+   ./deploy.sh planet-apply ./data/zerotier/dist/planet.next
+   ./deploy.sh planet-info
+   ```
+
+   应用会先验证、停服务、备份，再安装并启动，核对实际 World ID、时间戳和节点地址。备份失败会中止；启动校验失败会恢复本机旧 planet。相同文件重复应用不重启健康服务。生成、应用使用目录锁；进程被强制终止后，应先核对备份和运行状态再清理 `config/planet.lock`。
+
+A 保持原身份和端点可达，现有客户端即可通过协议自动学习新版根列表，无需重新入网或授权。离线客户端仍需能连接旧 root；无法连接时需手动替换 planet。不要仅等待固定时长就撤除旧入口。若新版已经传播，回退必须以旧根列表重新生成**更高版本**并应用，不能直接覆盖为旧文件。丢失签名密钥时从备份恢复，工具不会自动生成替代密钥。
+
+### 角色、端口和 Compose
+
+`config/role` 持久化角色，旧部署缺省 `primary`。普通镜像升级沿用它。root 模式不启动 ztncui 和下载服务，只需要 root 的 UDP 端口。也可以在初始化并应用后使用 Compose 管理 B（不要与脚本启动的同名容器同时运行）：
+
+```yaml
+services:
+  root:
+    image: zerotier-planet:multi
+    container_name: myztplanet
+    restart: unless-stopped
+    ports:
+      - "9994:9994/udp"
+    volumes:
+      - ./data/zerotier/one:/var/lib/zerotier-one
+      - ./data/zerotier/config:/app/config
+      - ./data/zerotier/dist:/app/dist
+```
+
+现有单节点 Compose 示例继续用于 primary。命令默认使用当前目录下的 `data/zerotier`；可用 `ZT_DATA_DIR`（绝对路径）、`ZT_CONTAINER_NAME`、`ZT_IMAGE` 指定部署。`ZT_SKIP_PULL=1` 仅用于更新时使用已有本地镜像。交互菜单 **8. 多 Planet 管理**提供同样的操作。

@@ -1,6 +1,7 @@
 #!/bin/sh
 
-set -x
+set -e
+umask 022
 
 # 配置路径和端口
 ZEROTIER_PATH="/var/lib/zerotier-one"
@@ -42,6 +43,7 @@ init_zerotier_data() {
 
     cd $ZEROTIER_PATH
     openssl rand -hex 16 > authtoken.secret
+    chmod 600 authtoken.secret
     zerotier-idtool generate identity.secret identity.public
     zerotier-idtool initmoon identity.public > moon.json
 
@@ -79,6 +81,7 @@ init_zerotier_data() {
 
     mkdir -p ${DIST_PATH}
     mv world.bin ${DIST_PATH}/planet
+    cp ${DIST_PATH}/planet ${ZEROTIER_PATH}/planet
     cp *.moon ${DIST_PATH}/
     echo "mkmoonworld success!"
 }
@@ -88,6 +91,9 @@ check_zerotier() {
     mkdir -p $ZEROTIER_PATH
     if [ "$(ls -A $ZEROTIER_PATH)" ]; then
         echo "$ZEROTIER_PATH is not empty, starting directly (existing planet is kept)"
+        [ -s "$ZEROTIER_PATH/identity.secret" ] && [ -s "$ZEROTIER_PATH/identity.public" ] || {
+            echo "Incomplete identity; restore backup instead of reinitializing" >&2; exit 1;
+        }
         if [ ! -f "${CONFIG_PATH}/zerotier-one.port" ]; then
             echo "${ZT_PORT}" > ${CONFIG_PATH}/zerotier-one.port
         fi
@@ -127,8 +133,8 @@ init_ztncui_data() {
 # 替换代码和依赖（旧版本 node_modules 中的 argon2 是为旧 Node 编译的，无法在新版本运行），
 # 同时保留用户数据：etc/passwd、etc/storage（成员名称）、etc/tls 以及 .env
 upgrade_ztncui() {
-    NEW_VERSION=$(cat ${BACKUP_PATH}/ztncui/.version 2>/dev/null)
-    OLD_VERSION=$(cat ${ZTNCUI_PATH}/.version 2>/dev/null)
+    NEW_VERSION=$(cat ${BACKUP_PATH}/ztncui/.version 2>/dev/null || true)
+    OLD_VERSION=$(cat ${ZTNCUI_PATH}/.version 2>/dev/null || true)
     if [ "${NEW_VERSION}" = "${OLD_VERSION}" ]; then
         echo "ztncui is up to date: ${OLD_VERSION}"
         return
@@ -167,7 +173,34 @@ check_ztncui() {
     write_ztncui_env
 }
 
-check_file_server
-check_zerotier
-check_ztncui
-start
+mkdir -p "$CONFIG_PATH"
+if [ ! -f "$CONFIG_PATH/role" ]; then echo "${ZT_ROLE:-primary}" > "$CONFIG_PATH/role"; fi
+ROLE=$(cat "$CONFIG_PATH/role")
+case "$ROLE" in
+root)
+    [ -s "$ZEROTIER_PATH/identity.secret" ] && [ -s "$ZEROTIER_PATH/planet" ] || {
+        echo "Initialize root and apply a signed planet before starting" >&2; exit 1;
+    }
+    "$MKWORLD_BIN" member "$ZEROTIER_PATH/planet" "$ZEROTIER_PATH/identity.public"
+    exec zerotier-one -p"$(cat "$CONFIG_PATH/zerotier-one.port")" "$ZEROTIER_PATH"
+    ;;
+primary)
+    check_file_server
+    check_zerotier
+    # Migrate legacy roots that ran with the built-in official planet.
+    if [ -f "$DIST_PATH/planet" ]; then
+        "$MKWORLD_BIN" member "$DIST_PATH/planet" "$ZEROTIER_PATH/identity.public"
+        if [ ! -f "$ZEROTIER_PATH/planet" ]; then
+            cp "$DIST_PATH/planet" "$ZEROTIER_PATH/planet"
+        elif ! "$MKWORLD_BIN" member "$ZEROTIER_PATH/planet" "$ZEROTIER_PATH/identity.public" 2>/dev/null; then
+            cp "$ZEROTIER_PATH/planet" "$CONFIG_PATH/planet.before-migration"
+            cp "$DIST_PATH/planet" "$ZEROTIER_PATH/planet"
+        elif ! cmp -s "$DIST_PATH/planet" "$ZEROTIER_PATH/planet"; then
+            echo "WARNING: published and runtime planet differ; keeping runtime planet" >&2
+        fi
+    fi
+    check_ztncui
+    start
+    ;;
+*) echo "Invalid persisted role: $ROLE" >&2; exit 1;;
+esac

@@ -1,12 +1,12 @@
 #!/bin/bash
 
-CONTAINER_NAME="myztplanet"
-ZEROTIER_PATH="$(pwd)/data/zerotier"
+CONTAINER_NAME="${ZT_CONTAINER_NAME:-myztplanet}"
+ZEROTIER_PATH="${ZT_DATA_DIR:-$(pwd)/data/zerotier}"
 CONFIG_PATH="${ZEROTIER_PATH}/config"
 DIST_PATH="${ZEROTIER_PATH}/dist"
 ZTNCUI_PATH="${ZEROTIER_PATH}/ztncui"
-DOCKER_IMAGE_THRID="fullyautomaticio/zerotier-planet:latest"
-DOCKER_IMAGE_SRC="fullyautomaticio/zerotier-planet:latest"
+DOCKER_IMAGE_THRID="${ZT_IMAGE:-fullyautomaticio/zerotier-planet:latest}"
+DOCKER_IMAGE_SRC="${ZT_IMAGE:-fullyautomaticio/zerotier-planet:latest}"
 DOCKER_IMAGE=$DOCKER_IMAGE_THRID
 print_message() {
     local message=$1
@@ -216,6 +216,11 @@ install_from_config() {
         cat ${CONFIG_PATH}/${config_name} | tr -d '\r'
     }
 
+    if [ "$(cat "${CONFIG_PATH}/role" 2>/dev/null)" = root ]; then
+        root_start
+        return
+    fi
+
     ipv4=$(extract_config "ip_addr4")
     ipv6=$(extract_config "ip_addr6")
     API_PORT=$(extract_config "ztncui.port")
@@ -259,7 +264,7 @@ upgrade() {
         exit 1
     fi
 
-    docker pull ${DOCKER_IMAGE}
+    if [ "${ZT_SKIP_PULL:-0}" != 1 ]; then docker pull "${DOCKER_IMAGE}" || return 1; fi
     new_image_id=$(docker inspect ${DOCKER_IMAGE} --format='{{.Id}}')
     old_image_id=$(docker inspect ${CONTAINER_NAME} --format='{{.Image}}')
     if [ "$new_image_id" == "$old_image_id" ]; then
@@ -278,10 +283,11 @@ upgrade() {
     echo "开始升级，将会删除旧的容器，10秒后开始升级..."
     sleep 10
 
-    backup_data
+    backup_data || return 1
 
     docker rm -f ${CONTAINER_NAME} || true
-    install_from_config
+    install_from_config || return 1
+    planet_health || return 1
 
     echo "---------------------------"
     print_message "升级完成：planet、moon、节点身份和网络配置均已保留，客户端无需重新替换planet文件" "32"
@@ -295,10 +301,17 @@ backup_data() {
     if [ ! -d "${ZEROTIER_PATH}" ]; then
         return
     fi
-    local backup_file="$(dirname ${ZEROTIER_PATH})/zerotier-backup-$(date +%Y%m%d-%H%M%S).tgz"
+    local backup_file
+    backup_file=$(mktemp "$(dirname "${ZEROTIER_PATH}")/zerotier-backup-$(date +%Y%m%d-%H%M%S)-XXXXXX.tgz") || return 1
     echo "正在备份数据到 ${backup_file} ..."
-    docker stop ${CONTAINER_NAME} >/dev/null 2>&1 || true
-    if tar czf "${backup_file}" -C "$(dirname ${ZEROTIER_PATH})" "$(basename ${ZEROTIER_PATH})"; then
+    if docker inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+        docker stop "$CONTAINER_NAME" >/dev/null || { echo 'Cannot stop container; backup aborted' >&2; exit 1; }
+    fi
+    if docker run --rm --network none --entrypoint sh \
+        -v "$(dirname "${ZEROTIER_PATH}"):/backup" \
+        -e BACKUP_FILE="$(basename "$backup_file")" -e DATA_DIR="$(basename "$ZEROTIER_PATH")" \
+        -e OWNER_UID="$(id -u)" -e OWNER_GID="$(id -g)" "$DOCKER_IMAGE" -c \
+        'umask 077; tar czf "/backup/$BACKUP_FILE" -C /backup "$DATA_DIR" && chown "$OWNER_UID:$OWNER_GID" "/backup/$BACKUP_FILE"'; then
         print_message "备份完成：${backup_file}" "32"
     else
         print_message "备份失败，已取消升级" "31"
@@ -308,6 +321,10 @@ backup_data() {
 }
 
 info() {
+    if [ "$(cat "${CONFIG_PATH}/role" 2>/dev/null)" = root ]; then
+        planet_dispatch planet-info
+        return
+    fi
     if ! docker inspect ${CONTAINER_NAME} &>/dev/null; then
         echo "容器${CONTAINER_NAME}不存在，请先安装"
         exit 1
@@ -382,6 +399,7 @@ menu() {
     echo "5. 重置密码"
     echo "6. CentOS内核升级"
     echo "7. 检查是否设置代理"
+    echo "8. 多 Planet 管理"
     echo "0. 退出"
     read -p "请输入数字：" num
     case "$num" in
@@ -392,9 +410,23 @@ menu() {
     5) resetpwd ;;
     6) update_centos_kernel ;;
     7) check_proxy ;;
+    8)
+        echo '1 初始化 root / 2 导出公开身份 / 3 生成候选 planet / 4 应用 planet / 5 查看状态'
+        read -r -p '请选择: ' action
+        case "$action" in
+        1) read -r -p 'IPv4: ' ip4; read -r -p 'IPv6 (可空): ' ip6; read -r -p 'UDP 端口: ' port; planet_dispatch root-init "$ip4" "$ip6" "$port";;
+        2) planet_dispatch root-export;;
+        3) read -r -p '根列表 JSON 路径: ' file; planet_dispatch planet-build "$file";;
+        4) read -r -p 'planet 路径: ' file; planet_dispatch planet-apply "$file";;
+        5) planet_dispatch planet-info;;
+        esac;;
     0) exit ;;
-    *) echo "请输入正确数字 [0-7]" ;;
+    *) echo "请输入正确数字 [0-8]" ;;
     esac
 }
 
-menu
+# Keep interactive usage and expose reproducible multi-root commands.
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/multi-planet.sh"
+if [[ "${BASH_SOURCE[0]}" = "$0" ]]; then
+    if [ "$#" -gt 0 ]; then planet_dispatch "$@"; else menu; fi
+fi

@@ -10,6 +10,7 @@ ARG ZTNCUI_REPO=https://github.com/key-networks/ztncui.git
 
 WORKDIR /app
 COPY ./patch/entrypoint.sh /app/entrypoint.sh
+COPY ./patch/planetctl.sh /app/planetctl.sh
 COPY ./patch/http_server.js /app/http_server.js
 COPY ./patch/mkworld_custom.cpp /app/patch/mkworld_custom.cpp
 COPY ./patch/build_mkworld.sh /app/patch/build_mkworld.sh
@@ -77,6 +78,7 @@ COPY --from=builder /usr/sbin/zerotier-one /usr/sbin/zerotier-one
 COPY --from=builder /usr/local/bin/mkworld /usr/local/bin/mkworld
 COPY --from=builder /app/LICENSES /app/LICENSES
 COPY --from=builder /app/entrypoint.sh /app/entrypoint.sh
+COPY --from=builder /app/planetctl.sh /app/planetctl.sh
 COPY --from=builder /app/http_server.js /app/http_server.js
 
 RUN ln -sf zerotier-one /usr/sbin/zerotier-cli \

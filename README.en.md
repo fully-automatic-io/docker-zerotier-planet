@@ -282,7 +282,7 @@ ZeroTier needs access to the TUN device. Check TUN device mapping, permissions, 
 
 ### Roadmap
 
-- [ ] Support multiple Planets
+- [x] Support multiple Planets
 - [x] Customize the management interface port
 - [ ] Deploy Planet and Controller separately
 
@@ -301,3 +301,67 @@ Thanks to the following supporters (in their original order):
 - [WireGuard One-Click Script](https://github.com/xubiaolin/wireguard-onekey)
 - [ZeroTier Virtual LAN Explained](https://www.glimmer.ltd/2021/3299983056/)
 - [Build a ZeroTier Planet / Controller in Five Minutes](https://v2ex.com/t/799623)
+
+## Multiple roots and migration from an existing single root
+
+One planet supports **1–4 independent roots** with standard 1.16.2 clients. A retains the `primary` role (root, Controller and UI); B/C/D use `root` (ZeroTier only). Controller HA is outside this feature.
+
+Build the updated source on each server; these changes do not automatically publish a Docker Hub image:
+
+```bash
+docker build -t zerotier-planet:multi .
+export ZT_IMAGE=zerotier-planet:multi
+```
+
+On A, back up all existing data, then run `ZT_SKIP_PULL=1 ./deploy.sh` and choose **3 (update)**. Do not reinstall. Identities, signing keys, networks and accounts are preserved. Startup installs the existing private planet into the daemon directory if the old deployment still used the built-in official planet. It never re-signs during normal startup.
+
+On B, explicitly configure at least one public IP and the public UDP port (matching the internal port), then export its public descriptor:
+
+```bash
+./deploy.sh root-init 203.0.113.20 '' 9994
+./deploy.sh root-export > b.json
+```
+
+B is not started until a signed planet is applied. Reinitialization preserves its identity and rejects changed endpoints. Copy only `b.json` to A. Never copy A's signing keys or either server's identity secret.
+
+On A, combine the public descriptors (the example requires Python 3):
+
+```bash
+./deploy.sh root-export > a.json
+python3 -c 'import json; print(json.dumps({"roots": json.load(open("a.json"))["roots"] + json.load(open("b.json"))["roots"]}))' > roots.json
+./deploy.sh planet-build roots.json
+```
+
+This prepares `data/zerotier/dist/planet.next` without changing live services. For subsequent expansion, include **all existing roots** from `planet-info`, plus the new root. Initial expansion must retain the original root and endpoints.
+
+Copy the candidate to B and apply it there first, after opening its UDP port. Then apply exactly the same file on A:
+
+```bash
+# B
+./deploy.sh planet-apply /path/to/planet.next
+# A
+./deploy.sh planet-apply ./data/zerotier/dist/planet.next
+./deploy.sh planet-info
+```
+
+Apply validates membership and signature continuity, stops the service, backs up the complete data directory, installs both runtime and published files, restarts, and checks the actual World ID, timestamp and node address. Backup failure aborts; startup verification failure restores the previous local planet. Applying an identical file does not restart a healthy service. Build/apply use `config/planet.lock`; after a forced interruption, inspect backups and running state before removing a stale lock.
+
+Existing clients learn the updated list through the original root without rejoining or reauthorization. Keep A's original identity and endpoint reachable for offline clients; clients unable to contact an old root need manual planet replacement. There is no fixed waiting period that guarantees migration completion. Once an update has propagated, rollback requires signing the old root list with a **higher timestamp**, rather than restoring an older binary. Missing signing keys must be restored from backup; update commands never generate replacements.
+
+The persisted `config/role` defaults to `primary` for legacy installations. Root mode starts no UI or file server. After initialization/application, a root can also be managed using Compose (stop/remove the script-managed container first):
+
+```yaml
+services:
+  root:
+    image: zerotier-planet:multi
+    container_name: myztplanet
+    restart: unless-stopped
+    ports:
+      - "9994:9994/udp"
+    volumes:
+      - ./data/zerotier/one:/var/lib/zerotier-one
+      - ./data/zerotier/config:/app/config
+      - ./data/zerotier/dist:/app/dist
+```
+
+The existing single-node Compose example remains valid for primary. Commands default to `./data/zerotier`; override with `ZT_DATA_DIR` (absolute path), `ZT_CONTAINER_NAME`, and `ZT_IMAGE`. `ZT_SKIP_PULL=1` uses an existing local image during an update. Interactive menu **8** exposes the same operations.
